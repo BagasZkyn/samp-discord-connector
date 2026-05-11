@@ -9,6 +9,7 @@
 #include "utils.hpp"
 #include "Emoji.hpp"
 #include "Embed.hpp"
+#include "Component.hpp"
 
 Message::Message(MessageId_t pawn_id, json const &data) : m_PawnId(pawn_id)
 {
@@ -221,6 +222,49 @@ bool Message::EditMessage(const std::string& msg, const EmbedId_t embedid)
 	std::string json_str;
 	if (!utils::TryDumpJson(data, json_str))
 		Logger::Get()->Log(samplog_LogLevel::ERROR, "can't serialize JSON: {}", json_str);
+
+	Network::Get()->Http().Patch(fmt::format("/channels/{:s}/messages/{:s}", channel->GetId(), GetId()), json_str);
+	return true;
+}
+
+bool Message::EditMessageWithComponents(std::string const& content, std::vector<ActionRowId_t>&& rows, EmbedId_t embedid)
+{
+	Channel_t const& channel = ChannelManager::Get()->FindChannel(GetChannel());
+	if (!channel)
+		return false;
+
+	json data = {
+		{ "content", content },
+		{ "components", ActionRowManager::DumpComponentsToJson(rows) }
+	};
+
+	if (embedid != INVALID_EMBED_ID)
+	{
+		auto const& embed = EmbedManager::Get()->FindEmbed(embedid);
+		if (embed)
+		{
+			json e = json::object();
+			e["title"] = embed->GetTitle();
+			e["description"] = embed->GetDescription();
+			e["url"] = embed->GetUrl();
+			e["timestamp"] = embed->GetTimestamp();
+			e["color"] = embed->GetColor();
+			if (!embed->GetFooterText().empty())
+				e["footer"] = { {"text", embed->GetFooterText()}, {"icon_url", embed->GetFooterIconUrl()} };
+			if (!embed->GetThumbnailUrl().empty())
+				e["thumbnail"] = { {"url", embed->GetThumbnailUrl()} };
+			if (!embed->GetImageUrl().empty())
+				e["image"] = { {"url", embed->GetImageUrl()} };
+			data["embeds"] = json::array({ e });
+		}
+	}
+
+	std::string json_str;
+	if (!utils::TryDumpJson(data, json_str))
+	{
+		Logger::Get()->Log(samplog_LogLevel::ERROR, "can't serialize JSON: {}", json_str);
+		return false;
+	}
 
 	Network::Get()->Http().Patch(fmt::format("/channels/{:s}/messages/{:s}", channel->GetId(), GetId()), json_str);
 	return true;

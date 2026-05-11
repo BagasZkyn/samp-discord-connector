@@ -103,6 +103,7 @@ public:
 	void AddReaction(Emoji_t const& emoji);
 	bool DeleteReaction(EmojiId_t const emojiid);
 	bool EditMessage(const std::string& msg, const EmbedId_t embedid = INVALID_EMBED_ID);
+	bool EditMessageWithComponents(std::string const& content, std::vector<ActionRowId_t>&& rows, EmbedId_t embedid);
 	void SetPresistent(bool persistent) { m_Persistent = persistent; };
 };
 

@@ -58,6 +58,8 @@ public:
 	void SendEmbed(EmbedId_t embedid, const std::string message = "");
 	void SendInteractionMessage(const std::string message);
 
+	std::string const& GetToken() const { return m_Token; }
+
 private:
 	CommandInteractionId_t m_ID;
 	Snowflake_t m_IDSnowflake;

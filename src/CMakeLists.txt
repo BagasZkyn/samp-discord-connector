@@ -20,7 +20,7 @@ configure_file(
 )
 
 
-add_samp_plugin(discord-connector 
+	add_samp_plugin(discord-connector 
 	${SAMPSDK_DIR}/amxplugin.cpp
 	${SAMPSDK_DIR}/amxplugin2.cpp
 	Bot.cpp
@@ -58,6 +58,10 @@ add_samp_plugin(discord-connector
 	Command.hpp
 	CommandInteraction.cpp
 	CommandInteraction.hpp
+	Component.cpp
+	Component.hpp
+	Modal.cpp
+	Modal.hpp
 	main.cpp
 	misc.hpp
 	natives.cpp

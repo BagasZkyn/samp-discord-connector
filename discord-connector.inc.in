@@ -52,12 +52,40 @@ enum DCC_MessageReactionType
 #define DCC_INVALID_ROLE DCC_Role:0
 #define DCC_INVALID_GUILD DCC_Guild:0
 
+enum DCC_ButtonStyle
+{
+	DCC_BUTTON_STYLE_PRIMARY = 1,
+	DCC_BUTTON_STYLE_SECONDARY = 2,
+	DCC_BUTTON_STYLE_SUCCESS = 3,
+	DCC_BUTTON_STYLE_DANGER = 4,
+	DCC_BUTTON_STYLE_LINK = 5
+};
+
+enum DCC_TextInputStyle
+{
+	DCC_TEXT_INPUT_STYLE_SHORT = 1,
+	DCC_TEXT_INPUT_STYLE_PARAGRAPH = 2
+};
+
+#define DCC_INVALID_BUTTON DCC_Button:0
+#define DCC_INVALID_SELECT_MENU DCC_SelectMenu:0
+#define DCC_INVALID_ACTION_ROW DCC_ActionRow:0
+#define DCC_INVALID_MODAL DCC_Modal:0
+#define DCC_INVALID_TEXT_INPUT DCC_TextInput:0
+
 #define DCC_ID_SIZE (20 + 1)
 #define DCC_USERNAME_SIZE (32 + 1)
 #define DCC_NICKNAME_SIZE (32 + 1)
 #define DCC_EMOJI_NAME_SIZE (32 + 1)
 #define DCC_COMMAND_SIZE (32 + 1)
 #define DCC_COMMAND_DESCRIPTION_SIZE (32 + 1)
+#define DCC_CUSTOM_ID_SIZE (100 + 1)
+#define DCC_LABEL_SIZE (80 + 1)
+#define DCC_PLACEHOLDER_SIZE (100 + 1)
+#define DCC_SELECT_OPTION_LABEL_SIZE (100 + 1)
+#define DCC_SELECT_OPTION_VALUE_SIZE (100 + 1)
+#define DCC_SELECT_OPTION_DESC_SIZE (100 + 1)
+#define DCC_MODAL_TITLE_SIZE (45 + 1)
 
 // natives
 //  channels
@@ -228,6 +256,48 @@ native DCC_GetInteractionChannel(DCC_Interaction:interaction, &DCC_Channel:chann
 native DCC_GetInteractionGuild(DCC_Interaction:interaction, &DCC_Guild:guild);
 native DCC_SendInteractionEmbed(DCC_Interaction:interaction, DCC_Embed:embed, const message[] = "");
 native DCC_SendInteractionMessage(DCC_Interaction:interaction, const message[] = "");
+native DCC_SendInteractionMessageWithComponents(DCC_Interaction:interaction, const message[], DCC_ActionRow:rows[], num_rows);
+native DCC_UpdateInteractionMessage(DCC_Interaction:interaction, const message[], DCC_ActionRow:rows[] = {0}, num_rows = 0, DCC_Embed:embed = DCC_Embed:0);
+native DCC_ReplyWithModal(DCC_Interaction:interaction, DCC_Modal:modal);
+native DCC_DeferInteraction(DCC_Interaction:interaction, bool:ephemeral = false);
+native DCC_GetInteractionCustomId(DCC_Interaction:interaction, dest[], max_size = sizeof dest);
+native DCC_GetInteractionSelectedValue(DCC_Interaction:interaction, offset, dest[], max_size = sizeof dest);
+native DCC_GetInteractionSelectedValueCount(DCC_Interaction:interaction, &count);
+native DCC_GetInteractionModalValue(DCC_Interaction:interaction, const custom_id[], dest[], max_size = sizeof dest);
+
+// buttons
+native DCC_Button:DCC_CreateButton(const custom_id[DCC_CUSTOM_ID_SIZE], const label[DCC_LABEL_SIZE], DCC_ButtonStyle:style = DCC_BUTTON_STYLE_PRIMARY);
+native DCC_ButtonSetLabel(DCC_Button:button, const label[DCC_LABEL_SIZE]);
+native DCC_ButtonSetStyle(DCC_Button:button, DCC_ButtonStyle:style);
+native DCC_ButtonSetEmoji(DCC_Button:button, const emoji_name[DCC_EMOJI_NAME_SIZE], const emoji_id[DCC_ID_SIZE] = "");
+native DCC_ButtonSetUrl(DCC_Button:button, const url[]);
+native DCC_ButtonSetDisabled(DCC_Button:button, bool:disabled);
+native DCC_DeleteButton(DCC_Button:button);
+
+// select menus
+native DCC_SelectMenu:DCC_CreateSelectMenu(const custom_id[DCC_CUSTOM_ID_SIZE], const placeholder[DCC_PLACEHOLDER_SIZE] = "", min_values = 1, max_values = 1);
+native DCC_SelectMenuAddOption(DCC_SelectMenu:menu, const label[DCC_SELECT_OPTION_LABEL_SIZE], const value[DCC_SELECT_OPTION_VALUE_SIZE], const description[DCC_SELECT_OPTION_DESC_SIZE] = "", const emoji_name[DCC_EMOJI_NAME_SIZE] = "", const emoji_id[DCC_ID_SIZE] = "");
+native DCC_SelectMenuSetDisabled(DCC_SelectMenu:menu, bool:disabled);
+native DCC_SelectMenuSetPlaceholder(DCC_SelectMenu:menu, const placeholder[DCC_PLACEHOLDER_SIZE]);
+native DCC_SelectMenuSetMinValues(DCC_SelectMenu:menu, min_values);
+native DCC_SelectMenuSetMaxValues(DCC_SelectMenu:menu, max_values);
+native DCC_DeleteSelectMenu(DCC_SelectMenu:button);
+
+// action rows
+native DCC_ActionRow:DCC_CreateActionRow();
+native DCC_ActionRowAddButton(DCC_ActionRow:row, DCC_Button:button);
+native DCC_ActionRowAddSelectMenu(DCC_ActionRow:row, DCC_SelectMenu:menu);
+native DCC_DeleteActionRow(DCC_ActionRow:row);
+
+// sending messages with components
+native DCC_SendChannelMessageWithComponents(DCC_Channel:channel, const message[], DCC_ActionRow:rows[], num_rows, const callback[] = "", const format[] = "", {Float, _}:...);
+native DCC_EditMessageWithComponents(DCC_Message:message, const content[], DCC_ActionRow:rows[], num_rows, DCC_Embed:embed = DCC_Embed:0);
+
+// modals
+native DCC_Modal:DCC_CreateModal(const custom_id[DCC_CUSTOM_ID_SIZE], const title[DCC_MODAL_TITLE_SIZE]);
+native DCC_ModalSetTitle(DCC_Modal:modal, const title[DCC_MODAL_TITLE_SIZE]);
+native DCC_ModalAddTextInput(DCC_Modal:modal, const custom_id[DCC_CUSTOM_ID_SIZE], const label[DCC_LABEL_SIZE], DCC_TextInputStyle:style = DCC_TEXT_INPUT_STYLE_SHORT, const placeholder[DCC_PLACEHOLDER_SIZE] = "", const default_value[] = "", min_length = 0, max_length = 4000, bool:required = true);
+native DCC_DeleteModal(DCC_Modal:modal);
 
 // callbacks
 //  channels
@@ -256,3 +326,10 @@ forward DCC_OnGuildMemberRemove(DCC_Guild:guild, DCC_User:user);
 forward DCC_OnGuildRoleCreate(DCC_Guild:guild, DCC_Role:role);
 forward DCC_OnGuildRoleUpdate(DCC_Guild:guild, DCC_Role:role);
 forward DCC_OnGuildRoleDelete(DCC_Guild:guild, DCC_Role:role);
+
+// components
+forward DCC_OnButtonClick(DCC_Interaction:interaction, DCC_User:user, const custom_id[]);
+forward DCC_OnSelectMenuSelect(DCC_Interaction:interaction, DCC_User:user, const custom_id[]);
+
+// modals
+forward DCC_OnModalSubmit(DCC_Interaction:interaction, DCC_User:user, const custom_id[]);

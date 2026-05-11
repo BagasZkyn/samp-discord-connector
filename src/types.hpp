@@ -46,3 +46,24 @@ using CommandInteractionId_t = cell;
 const CommandInteractionId_t INVALID_COMMAND_INTERACTION_ID = 0;
 
 using CommandInteractionOption_t = std::unique_ptr<struct CommandInteractionOption>;
+
+using Button_t = std::unique_ptr<class Button>;
+using ButtonId_t = cell;
+const ButtonId_t INVALID_BUTTON_ID = 0;
+
+using SelectOption_t = std::unique_ptr<class SelectOption>;
+using SelectMenu_t = std::unique_ptr<class SelectMenu>;
+using SelectMenuId_t = cell;
+const SelectMenuId_t INVALID_SELECT_MENU_ID = 0;
+
+using ActionRow_t = std::unique_ptr<class ActionRow>;
+using ActionRowId_t = cell;
+const ActionRowId_t INVALID_ACTION_ROW_ID = 0;
+
+using Modal_t = std::unique_ptr<class Modal>;
+using ModalId_t = cell;
+const ModalId_t INVALID_MODAL_ID = 0;
+
+using TextInput_t = std::unique_ptr<class TextInput>;
+using TextInputId_t = cell;
+const TextInputId_t INVALID_TEXT_INPUT_ID = 0;

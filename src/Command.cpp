@@ -1,4 +1,5 @@
 #include "Command.hpp"
+#include "natives.hpp"
 #include "Network.hpp"
 #include "PawnDispatcher.hpp"
 #include "Callback.hpp"
@@ -9,6 +10,8 @@
 #include "CommandInteraction.hpp"
 #include "User.hpp"
 #include "Role.hpp"
+#include "Component.hpp"
+#include "Modal.hpp"
 
 Command::Command(Snowflake_t const& id, std::string const& name, std::string const& description, GuildId_t guild) :
 	m_ID(id),
@@ -201,7 +204,12 @@ void CommandManager::Initialize()
 
 	Network::Get()->WebSocket().RegisterEvent(WebSocket::Event::INTERACTION_CREATE, [this](const json& data)
 	{
-		if (data.find("type") != data.end() && data.at("type").get<int>() == 2 /*application command*/)
+		if (data.find("type") == data.end())
+			return;
+
+		int type = data.at("type").get<int>();
+
+		if (type == 2 /*application command*/)
 		{
 			json my_awesome_json;
 			std::string json_str;
@@ -241,6 +249,88 @@ void CommandManager::Initialize()
 					CommandInteractionManager::Get()->m_CurrentInteractionID = INVALID_COMMAND_INTERACTION_ID;
 				}
 				CommandInteractionManager::Get()->DeleteCommandInteraction(interaction->GetPawnId());
+			});
+		}
+		else if (type == 3 /*MESSAGE_COMPONENT*/)
+		{
+			std::string custom_id = data.at("data").at("custom_id").get<std::string>();
+			int component_type = data.at("data").at("component_type").get<int>();
+
+			UserId_t userid = 0;
+			std::string meh;
+			bool has_guild = utils::TryGetJsonValue(data, meh, "guild_id");
+			if (has_guild)
+				userid = UserManager::Get()->AddUser(data["member"]["user"]);
+			else
+				userid = UserManager::Get()->AddUser(data["user"]);
+
+			std::string id = data.at("id").get<std::string>();
+			std::string token = data.at("token").get<std::string>();
+
+			// store interaction
+			cell cid = StoreComponentInteraction(id, token, custom_id, component_type);
+
+			if (component_type == 3 /*SelectMenu*/)
+			{
+				std::vector<std::string> selected;
+				if (data.find("data") != data.end() && data["data"].find("values") != data["data"].end())
+				{
+					for (auto const& v : data["data"]["values"])
+						selected.push_back(v.get<std::string>());
+				}
+				StoreSelectMenuValues(cid, std::move(selected));
+			}
+
+			PawnDispatcher::Get()->Dispatch([cid, userid, component_type, custom_id]() mutable
+			{
+				pawn_cb::Error error;
+				if (component_type == 2 /*Button*/)
+					pawn_cb::Callback::CallFirst(error, "DCC_OnButtonClick", cid, userid, custom_id.c_str());
+				else if (component_type == 3 /*SelectMenu*/)
+					pawn_cb::Callback::CallFirst(error, "DCC_OnSelectMenuSelect", cid, userid, custom_id.c_str());
+
+				g_ComponentInteractionStore.erase(cid);
+			});
+		}
+		else if (type == 5 /*MODAL_SUBMIT*/)
+		{
+			std::string custom_id = data.at("data").at("custom_id").get<std::string>();
+
+			UserId_t userid = 0;
+			std::string meh;
+			bool has_guild = utils::TryGetJsonValue(data, meh, "guild_id");
+			if (has_guild)
+				userid = UserManager::Get()->AddUser(data["member"]["user"]);
+			else
+				userid = UserManager::Get()->AddUser(data["user"]);
+
+			std::string id = data.at("id").get<std::string>();
+			std::string token = data.at("token").get<std::string>();
+
+			cell cid = StoreComponentInteraction(id, token, custom_id, 5);
+
+			// extract modal values
+			std::map<std::string, std::string> modal_values;
+			if (data.find("data") != data.end() && data["data"].find("components") != data["data"].end())
+			{
+				for (auto const& row : data["data"]["components"])
+				{
+					if (row.find("components") == row.end())
+						continue;
+					for (auto const& comp : row["components"])
+					{
+						if (comp.find("custom_id") != comp.end() && comp.find("value") != comp.end())
+							modal_values[comp["custom_id"].get<std::string>()] = comp["value"].get<std::string>();
+					}
+				}
+			}
+			StoreModalValues(cid, std::move(modal_values));
+
+			PawnDispatcher::Get()->Dispatch([cid, userid, custom_id]() mutable
+			{
+				pawn_cb::Error error;
+				pawn_cb::Callback::CallFirst(error, "DCC_OnModalSubmit", cid, userid, custom_id.c_str());
+				g_ComponentInteractionStore.erase(cid);
 			});
 		}
 	});

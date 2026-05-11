@@ -1,6 +1,9 @@
 #pragma once
 
 #include "sdk.hpp"
+#include <string>
+#include <vector>
+#include <map>
 
 #define AMX_DECLARE_NATIVE(native) \
 	cell AMX_NATIVE_CALL native(AMX *amx, cell *params)
@@ -143,5 +146,54 @@ namespace Native
 	AMX_DECLARE_NATIVE(DCC_GetInteractionGuild);
 	AMX_DECLARE_NATIVE(DCC_SendInteractionEmbed);
 	AMX_DECLARE_NATIVE(DCC_SendInteractionMessage);
+	AMX_DECLARE_NATIVE(DCC_SendInteractionMessageWithComponents);
+	AMX_DECLARE_NATIVE(DCC_UpdateInteractionMessage);
+	AMX_DECLARE_NATIVE(DCC_ReplyWithModal);
+	AMX_DECLARE_NATIVE(DCC_DeferInteraction);
+	AMX_DECLARE_NATIVE(DCC_GetInteractionCustomId);
+	AMX_DECLARE_NATIVE(DCC_GetInteractionSelectedValue);
+	AMX_DECLARE_NATIVE(DCC_GetInteractionSelectedValueCount);
+	AMX_DECLARE_NATIVE(DCC_GetInteractionModalValue);
 	AMX_DECLARE_NATIVE(DCC_DeleteCommand);
+	AMX_DECLARE_NATIVE(DCC_CreateButton);
+	AMX_DECLARE_NATIVE(DCC_ButtonSetLabel);
+	AMX_DECLARE_NATIVE(DCC_ButtonSetStyle);
+	AMX_DECLARE_NATIVE(DCC_ButtonSetEmoji);
+	AMX_DECLARE_NATIVE(DCC_ButtonSetUrl);
+	AMX_DECLARE_NATIVE(DCC_ButtonSetDisabled);
+	AMX_DECLARE_NATIVE(DCC_DeleteButton);
+	AMX_DECLARE_NATIVE(DCC_CreateSelectMenu);
+	AMX_DECLARE_NATIVE(DCC_SelectMenuAddOption);
+	AMX_DECLARE_NATIVE(DCC_SelectMenuSetDisabled);
+	AMX_DECLARE_NATIVE(DCC_SelectMenuSetPlaceholder);
+	AMX_DECLARE_NATIVE(DCC_SelectMenuSetMinValues);
+	AMX_DECLARE_NATIVE(DCC_SelectMenuSetMaxValues);
+	AMX_DECLARE_NATIVE(DCC_DeleteSelectMenu);
+	AMX_DECLARE_NATIVE(DCC_CreateActionRow);
+	AMX_DECLARE_NATIVE(DCC_ActionRowAddButton);
+	AMX_DECLARE_NATIVE(DCC_ActionRowAddSelectMenu);
+	AMX_DECLARE_NATIVE(DCC_DeleteActionRow);
+	AMX_DECLARE_NATIVE(DCC_SendChannelMessageWithComponents);
+	AMX_DECLARE_NATIVE(DCC_EditMessageWithComponents);
+	AMX_DECLARE_NATIVE(DCC_CreateModal);
+	AMX_DECLARE_NATIVE(DCC_ModalSetTitle);
+	AMX_DECLARE_NATIVE(DCC_ModalAddTextInput);
+	AMX_DECLARE_NATIVE(DCC_DeleteModal);
 }
+
+// Component interaction store (shared with Command.cpp)
+struct ComponentInteractionData
+{
+	std::string id;
+	std::string token;
+	std::string custom_id;
+	int component_type = 0;
+	std::vector<std::string> selected_values;
+	std::map<std::string, std::string> modal_values;
+	bool responded = false;
+};
+extern std::map<cell, ComponentInteractionData> g_ComponentInteractionStore;
+extern cell StoreComponentInteraction(std::string const& id, std::string const& token,
+	std::string const& custom_id, int component_type);
+extern void StoreSelectMenuValues(cell cid, std::vector<std::string>&& values);
+extern void StoreModalValues(cell cid, std::map<std::string, std::string>&& values);

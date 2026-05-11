@@ -6,6 +6,7 @@
 #include "Guild.hpp"
 #include "utils.hpp"
 #include "Embed.hpp"
+#include "Component.hpp"
 
 #include "fmt/format.h"
 
@@ -116,6 +117,48 @@ void Channel::SendMessage(std::string &&msg, pawn_cb::Callback_t &&cb)
 						{
 							MessageManager::Get()->Delete(msg);
 						}
+						MessageManager::Get()->SetCreatedMessageId(INVALID_MESSAGE_ID);
+					}
+				});
+			}
+		};
+	}
+
+	Network::Get()->Http().Post(fmt::format("/channels/{:s}/messages", GetId()), json_str,
+		std::move(response_cb));
+}
+
+void Channel::SendMessageWithComponents(std::string&& msg, std::vector<ActionRowId_t>&& rows, pawn_cb::Callback_t&& cb)
+{
+	json data = {
+		{ "content", std::move(msg) },
+		{ "components", ActionRowManager::DumpComponentsToJson(rows) }
+	};
+
+	std::string json_str;
+	if (!utils::TryDumpJson(data, json_str))
+	{
+		Logger::Get()->Log(samplog_LogLevel::ERROR, "can't serialize JSON: {}", json_str);
+		return;
+	}
+
+	Http::ResponseCb_t response_cb;
+	if (cb)
+	{
+		response_cb = [cb](Http::Response response)
+		{
+			if (response.status / 100 == 2)
+			{
+				auto msg_json = json::parse(response.body);
+				PawnDispatcher::Get()->Dispatch([cb, msg_json]() mutable
+				{
+					auto msg = MessageManager::Get()->Create(msg_json);
+					if (msg != INVALID_MESSAGE_ID)
+					{
+						MessageManager::Get()->SetCreatedMessageId(msg);
+						cb->Execute();
+						if (!MessageManager::Get()->Find(msg)->Persistent())
+							MessageManager::Get()->Delete(msg);
 						MessageManager::Get()->SetCreatedMessageId(INVALID_MESSAGE_ID);
 					}
 				});

@@ -14,6 +14,9 @@
 #include "Emoji.hpp"
 #include "Command.hpp"
 #include "CommandInteraction.hpp"
+#include "Component.hpp"
+#include "Modal.hpp"
+#include "utils.hpp"
 #include <fmt/printf.h>
 
 #ifdef ERROR
@@ -3168,3 +3171,756 @@ AMX_DECLARE_NATIVE(Native::DCC_AddCommandOption)
 {
 	return 1;
 }*/
+
+// ===== Component & Modal Interaction Storage =====
+std::map<cell, ComponentInteractionData> g_ComponentInteractionStore;
+static cell g_NextComponentInteractionId = 10000;
+
+// ===== Interaction Helpers (type 3 & 5) =====
+cell StoreComponentInteraction(std::string const& id, std::string const& token,
+	std::string const& custom_id, int component_type)
+{
+	cell cid = g_NextComponentInteractionId++;
+	ComponentInteractionData data;
+	data.id = id;
+	data.token = token;
+	data.custom_id = custom_id;
+	data.component_type = component_type;
+	g_ComponentInteractionStore[cid] = std::move(data);
+	return cid;
+}
+
+void StoreSelectMenuValues(cell cid, std::vector<std::string>&& values)
+{
+	auto it = g_ComponentInteractionStore.find(cid);
+	if (it != g_ComponentInteractionStore.end())
+		it->second.selected_values = std::move(values);
+}
+
+void StoreModalValues(cell cid, std::map<std::string, std::string>&& values)
+{
+	auto it = g_ComponentInteractionStore.find(cid);
+	if (it != g_ComponentInteractionStore.end())
+		it->second.modal_values = std::move(values);
+}
+
+static bool SendInteractionCallback(cell interaction, int type, json const& payload)
+{
+	auto it = g_ComponentInteractionStore.find(interaction);
+	if (it == g_ComponentInteractionStore.end())
+		return false;
+	if (it->second.responded)
+		return false;
+
+	json body;
+	body["type"] = type;
+	if (!payload.empty())
+		body["data"] = payload;
+
+	std::string json_str;
+	if (!utils::TryDumpJson(body, json_str))
+		return false;
+
+	it->second.responded = true;
+	Network::Get()->Http().Post(
+		fmt::format("/interactions/{:s}/{:s}/callback", it->second.id, it->second.token),
+		json_str);
+	return true;
+}
+
+// native DCC_SendInteractionMessageWithComponents(DCC_Interaction:interaction, const message[], DCC_ActionRow:rows[], num_rows);
+AMX_DECLARE_NATIVE(Native::DCC_SendInteractionMessageWithComponents)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SendInteractionMessageWithComponents", params, "dsrd");
+
+	CommandInteractionId_t interaction_id = params[1];
+	auto message = amx_GetCppString(amx, params[2]);
+
+	cell* addr = nullptr;
+	amx_GetAddr(amx, params[3], &addr);
+	int num_rows = static_cast<int>(params[4]);
+	std::vector<ActionRowId_t> row_ids;
+	for (int i = 0; i < num_rows; i++)
+		row_ids.push_back(static_cast<ActionRowId_t>(addr[i]));
+
+	// Try component interaction store first, then command interaction
+	auto cit = g_ComponentInteractionStore.find(interaction_id);
+	if (cit != g_ComponentInteractionStore.end())
+	{
+		json payload = json::object();
+		payload["content"] = message;
+		payload["components"] = ActionRowManager::DumpComponentsToJson(row_ids);
+		std::string json_str;
+		if (!utils::TryDumpJson(payload, json_str))
+			return 0;
+		Network::Get()->Http().Patch(
+			fmt::format("/webhooks/{:s}/{:s}/messages/@original",
+				ThisBot::Get()->GetApplicationID(), cit->second.token), json_str);
+		return 1;
+	}
+
+	auto const& interaction = CommandInteractionManager::Get()->FindCommandInteraction(interaction_id);
+	if (!interaction)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", interaction_id);
+		return 0;
+	}
+
+	json payload = json::object();
+	payload["content"] = message;
+	payload["components"] = ActionRowManager::DumpComponentsToJson(row_ids);
+	std::string json_str;
+	if (!utils::TryDumpJson(payload, json_str))
+		return 0;
+
+	Network::Get()->Http().Patch(fmt::format("/webhooks/{:s}/{:s}/messages/@original",
+		ThisBot::Get()->GetApplicationID(), interaction->GetToken()), json_str);
+	return 1;
+}
+
+// native DCC_UpdateInteractionMessage(DCC_Interaction:interaction, const message[], DCC_ActionRow:rows[] = {0}, num_rows = 0, DCC_Embed:embed = DCC_Embed:0);
+AMX_DECLARE_NATIVE(Native::DCC_UpdateInteractionMessage)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_UpdateInteractionMessage", params, "dsrdd");
+
+	auto cid = static_cast<cell>(params[1]);
+	auto message = amx_GetCppString(amx, params[2]);
+
+	json payload = json::object();
+	payload["content"] = message;
+
+	cell* addr = nullptr;
+	amx_GetAddr(amx, params[3], &addr);
+	int num_rows = static_cast<int>(params[4]);
+	std::vector<ActionRowId_t> row_ids;
+	for (int i = 0; i < num_rows; i++)
+		row_ids.push_back(static_cast<ActionRowId_t>(addr[i]));
+	if (!row_ids.empty())
+		payload["components"] = ActionRowManager::DumpComponentsToJson(row_ids);
+
+	auto embedid = static_cast<EmbedId_t>(params[5]);
+	if (embedid != INVALID_EMBED_ID)
+	{
+		auto const& embed = EmbedManager::Get()->FindEmbed(embedid);
+		if (embed)
+		{
+			json e = json::object();
+			e["title"] = embed->GetTitle();
+			e["description"] = embed->GetDescription();
+			e["url"] = embed->GetUrl();
+			e["timestamp"] = embed->GetTimestamp();
+			e["color"] = embed->GetColor();
+			if (!embed->GetFooterText().empty())
+				e["footer"] = { {"text", embed->GetFooterText()}, {"icon_url", embed->GetFooterIconUrl()} };
+			if (!embed->GetThumbnailUrl().empty())
+				e["thumbnail"] = { {"url", embed->GetThumbnailUrl()} };
+			if (!embed->GetImageUrl().empty())
+				e["image"] = { {"url", embed->GetImageUrl()} };
+			payload["embeds"] = json::array({ e });
+		}
+	}
+
+	bool as_callback = false;
+	auto cit = g_ComponentInteractionStore.find(cid);
+	if (cit != g_ComponentInteractionStore.end())
+	{
+		std::string json_str;
+		if (!utils::TryDumpJson(payload, json_str))
+			return 0;
+		Network::Get()->Http().Patch(
+			fmt::format("/webhooks/{:s}/{:s}/messages/@original",
+				ThisBot::Get()->GetApplicationID(), cit->second.token), json_str);
+		return 1;
+	}
+
+	auto const& interaction = CommandInteractionManager::Get()->FindCommandInteraction(cid);
+	if (!interaction)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", cid);
+		return 0;
+	}
+	std::string json_str;
+	if (!utils::TryDumpJson(payload, json_str))
+		return 0;
+	Network::Get()->Http().Patch(fmt::format("/webhooks/{:s}/{:s}/messages/@original",
+		ThisBot::Get()->GetApplicationID(), interaction->GetToken()), json_str);
+	return 1;
+}
+
+// native DCC_ReplyWithModal(DCC_Interaction:interaction, DCC_Modal:modal);
+AMX_DECLARE_NATIVE(Native::DCC_ReplyWithModal)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ReplyWithModal", params, "dd");
+
+	auto cid = static_cast<cell>(params[1]);
+	auto modal_id = static_cast<ModalId_t>(params[2]);
+	auto const& modal = ModalManager::Get()->FindModal(modal_id);
+	if (!modal)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid modal id '{}'", modal_id);
+		return 0;
+	}
+
+	json payload = modal->DumpToJson();
+	int type = payload.at("type").get<int>();
+	json data = payload.at("data");
+
+	if (!SendInteractionCallback(cid, type, data))
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "failed to send modal response");
+		return 0;
+	}
+
+	ModalManager::Get()->DeleteModal(modal_id);
+	return 1;
+}
+
+// native DCC_DeferInteraction(DCC_Interaction:interaction, bool:ephemeral = false);
+AMX_DECLARE_NATIVE(Native::DCC_DeferInteraction)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_DeferInteraction", params, "dd");
+
+	auto cid = static_cast<cell>(params[1]);
+	bool ephemeral = static_cast<bool>(params[2]);
+
+	auto cit = g_ComponentInteractionStore.find(cid);
+	if (cit == g_ComponentInteractionStore.end())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", cid);
+		return 0;
+	}
+
+	int type = 5; // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+	json data;
+	if (ephemeral)
+		data["flags"] = 64;
+
+	if (!SendInteractionCallback(cid, type, data))
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "failed to defer interaction");
+		return 0;
+	}
+	return 1;
+}
+
+// native DCC_GetInteractionCustomId(DCC_Interaction:interaction, dest[], max_size = sizeof dest);
+AMX_DECLARE_NATIVE(Native::DCC_GetInteractionCustomId)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_GetInteractionCustomId", params, "drd");
+
+	auto cid = static_cast<cell>(params[1]);
+	auto cit = g_ComponentInteractionStore.find(cid);
+	if (cit == g_ComponentInteractionStore.end())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", cid);
+		return 0;
+	}
+
+	cell ret_val = amx_SetCppString(amx, params[2], cit->second.custom_id, params[3]) == AMX_ERR_NONE;
+	return ret_val;
+}
+
+// native DCC_GetInteractionSelectedValue(DCC_Interaction:interaction, offset, dest[], max_size = sizeof dest);
+AMX_DECLARE_NATIVE(Native::DCC_GetInteractionSelectedValue)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_GetInteractionSelectedValue", params, "ddrd");
+
+	auto cid = static_cast<cell>(params[1]);
+	auto offset = static_cast<size_t>(params[2]);
+	auto cit = g_ComponentInteractionStore.find(cid);
+	if (cit == g_ComponentInteractionStore.end())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", cid);
+		return 0;
+	}
+
+	if (offset >= cit->second.selected_values.size())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR,
+			"invalid offset '{}', max is '{}'", offset, cit->second.selected_values.size());
+		return 0;
+	}
+
+	cell ret_val = amx_SetCppString(amx, params[3], cit->second.selected_values[offset], params[4]) == AMX_ERR_NONE;
+	return ret_val;
+}
+
+// native DCC_GetInteractionSelectedValueCount(DCC_Interaction:interaction, &count);
+AMX_DECLARE_NATIVE(Native::DCC_GetInteractionSelectedValueCount)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_GetInteractionSelectedValueCount", params, "dr");
+
+	auto cid = static_cast<cell>(params[1]);
+	auto cit = g_ComponentInteractionStore.find(cid);
+	if (cit == g_ComponentInteractionStore.end())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", cid);
+		return 0;
+	}
+
+	cell* dest = nullptr;
+	if (amx_GetAddr(amx, params[2], &dest) != AMX_ERR_NONE || dest == nullptr)
+		return 0;
+
+	*dest = static_cast<cell>(cit->second.selected_values.size());
+	return 1;
+}
+
+// native DCC_GetInteractionModalValue(DCC_Interaction:interaction, const custom_id[], dest[], max_size = sizeof dest);
+AMX_DECLARE_NATIVE(Native::DCC_GetInteractionModalValue)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_GetInteractionModalValue", params, "dsrd");
+
+	auto cid = static_cast<cell>(params[1]);
+	auto custom_id = amx_GetCppString(amx, params[2]);
+
+	auto cit = g_ComponentInteractionStore.find(cid);
+	if (cit == g_ComponentInteractionStore.end())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid interaction id '{}'", cid);
+		return 0;
+	}
+
+	auto vit = cit->second.modal_values.find(custom_id);
+	if (vit == cit->second.modal_values.end())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "modal has no field with custom id '{}'", custom_id);
+		return 0;
+	}
+
+	cell ret_val = amx_SetCppString(amx, params[3], vit->second, params[4]) == AMX_ERR_NONE;
+	return ret_val;
+}
+
+// ===== Button natives =====
+
+// native DCC_Button:DCC_CreateButton(const custom_id[DCC_CUSTOM_ID_SIZE], const label[DCC_LABEL_SIZE], DCC_ButtonStyle:style = DCC_BUTTON_STYLE_PRIMARY);
+AMX_DECLARE_NATIVE(Native::DCC_CreateButton)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_CreateButton", params, "ssd");
+	auto custom_id = amx_GetCppString(amx, params[1]);
+	auto label = amx_GetCppString(amx, params[2]);
+	auto style = static_cast<int>(params[3]);
+
+	if (custom_id.empty() || custom_id.length() > 100)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "custom_id must be 1-100 characters");
+		return 0;
+	}
+	if (label.empty() || label.length() > 80)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "label must be 1-80 characters");
+		return 0;
+	}
+
+	auto id = ButtonManager::Get()->AddButton(custom_id, label, style);
+	return id;
+}
+
+// native DCC_ButtonSetLabel(DCC_Button:button, const label[DCC_LABEL_SIZE]);
+AMX_DECLARE_NATIVE(Native::DCC_ButtonSetLabel)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ButtonSetLabel", params, "ds");
+	auto btn_id = static_cast<ButtonId_t>(params[1]);
+	auto const& btn = ButtonManager::Get()->FindButton(btn_id);
+	if (!btn)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid button id '{}'", btn_id);
+		return 0;
+	}
+	auto label = amx_GetCppString(amx, params[2]);
+	btn->SetLabel(label);
+	return 1;
+}
+
+// native DCC_ButtonSetStyle(DCC_Button:button, DCC_ButtonStyle:style);
+AMX_DECLARE_NATIVE(Native::DCC_ButtonSetStyle)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ButtonSetStyle", params, "dd");
+	auto btn_id = static_cast<ButtonId_t>(params[1]);
+	auto const& btn = ButtonManager::Get()->FindButton(btn_id);
+	if (!btn)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid button id '{}'", btn_id);
+		return 0;
+	}
+	btn->SetStyle(static_cast<int>(params[2]));
+	return 1;
+}
+
+// native DCC_ButtonSetEmoji(DCC_Button:button, const emoji_name[DCC_EMOJI_NAME_SIZE], const emoji_id[DCC_ID_SIZE] = "");
+AMX_DECLARE_NATIVE(Native::DCC_ButtonSetEmoji)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ButtonSetEmoji", params, "dss");
+	auto btn_id = static_cast<ButtonId_t>(params[1]);
+	auto const& btn = ButtonManager::Get()->FindButton(btn_id);
+	if (!btn)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid button id '{}'", btn_id);
+		return 0;
+	}
+	auto emoji_name = amx_GetCppString(amx, params[2]);
+	auto emoji_id = amx_GetCppString(amx, params[3]);
+	btn->SetEmoji(emoji_name, emoji_id);
+	return 1;
+}
+
+// native DCC_ButtonSetUrl(DCC_Button:button, const url[]);
+AMX_DECLARE_NATIVE(Native::DCC_ButtonSetUrl)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ButtonSetUrl", params, "ds");
+	auto btn_id = static_cast<ButtonId_t>(params[1]);
+	auto const& btn = ButtonManager::Get()->FindButton(btn_id);
+	if (!btn)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid button id '{}'", btn_id);
+		return 0;
+	}
+	auto url = amx_GetCppString(amx, params[2]);
+	btn->SetUrl(url);
+	return 1;
+}
+
+// native DCC_ButtonSetDisabled(DCC_Button:button, bool:disabled);
+AMX_DECLARE_NATIVE(Native::DCC_ButtonSetDisabled)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ButtonSetDisabled", params, "dd");
+	auto btn_id = static_cast<ButtonId_t>(params[1]);
+	auto const& btn = ButtonManager::Get()->FindButton(btn_id);
+	if (!btn)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid button id '{}'", btn_id);
+		return 0;
+	}
+	btn->SetDisabled(static_cast<bool>(params[2]));
+	return 1;
+}
+
+// native DCC_DeleteButton(DCC_Button:button);
+AMX_DECLARE_NATIVE(Native::DCC_DeleteButton)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_DeleteButton", params, "d");
+	auto btn_id = static_cast<ButtonId_t>(params[1]);
+	return ButtonManager::Get()->DeleteButton(btn_id) ? 1 : 0;
+}
+
+// ===== Select Menu natives =====
+
+// native DCC_SelectMenu:DCC_CreateSelectMenu(const custom_id[DCC_CUSTOM_ID_SIZE], const placeholder[DCC_PLACEHOLDER_SIZE] = "", min_values = 1, max_values = 1);
+AMX_DECLARE_NATIVE(Native::DCC_CreateSelectMenu)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_CreateSelectMenu", params, "ssdd");
+	auto custom_id = amx_GetCppString(amx, params[1]);
+	auto placeholder = amx_GetCppString(amx, params[2]);
+	auto min_values = static_cast<int>(params[3]);
+	auto max_values = static_cast<int>(params[4]);
+
+	if (custom_id.empty() || custom_id.length() > 100)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "custom_id must be 1-100 characters");
+		return 0;
+	}
+
+	auto id = SelectMenuManager::Get()->AddSelectMenu(custom_id, placeholder, min_values, max_values);
+	return id;
+}
+
+// native DCC_SelectMenuAddOption(DCC_SelectMenu:menu, const label[], const value[], const description[] = "", const emoji_name[] = "", const emoji_id[] = "");
+AMX_DECLARE_NATIVE(Native::DCC_SelectMenuAddOption)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SelectMenuAddOption", params, "dsssss");
+	auto menu_id = static_cast<SelectMenuId_t>(params[1]);
+	auto const& menu = SelectMenuManager::Get()->FindSelectMenu(menu_id);
+	if (!menu)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid select menu id '{}'", menu_id);
+		return 0;
+	}
+	auto label = amx_GetCppString(amx, params[2]);
+	auto value = amx_GetCppString(amx, params[3]);
+	auto description = amx_GetCppString(amx, params[4]);
+	auto emoji_name = amx_GetCppString(amx, params[5]);
+	auto emoji_id = amx_GetCppString(amx, params[6]);
+	menu->AddOption(label, value, description, emoji_name, emoji_id);
+	return 1;
+}
+
+// native DCC_SelectMenuSetDisabled(DCC_SelectMenu:menu, bool:disabled);
+AMX_DECLARE_NATIVE(Native::DCC_SelectMenuSetDisabled)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SelectMenuSetDisabled", params, "dd");
+	auto menu_id = static_cast<SelectMenuId_t>(params[1]);
+	auto const& menu = SelectMenuManager::Get()->FindSelectMenu(menu_id);
+	if (!menu)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid select menu id '{}'", menu_id);
+		return 0;
+	}
+	menu->SetDisabled(static_cast<bool>(params[2]));
+	return 1;
+}
+
+// native DCC_SelectMenuSetPlaceholder(DCC_SelectMenu:menu, const placeholder[DCC_PLACEHOLDER_SIZE]);
+AMX_DECLARE_NATIVE(Native::DCC_SelectMenuSetPlaceholder)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SelectMenuSetPlaceholder", params, "ds");
+	auto menu_id = static_cast<SelectMenuId_t>(params[1]);
+	auto const& menu = SelectMenuManager::Get()->FindSelectMenu(menu_id);
+	if (!menu)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid select menu id '{}'", menu_id);
+		return 0;
+	}
+	auto placeholder = amx_GetCppString(amx, params[2]);
+	menu->SetPlaceholder(placeholder);
+	return 1;
+}
+
+// native DCC_SelectMenuSetMinValues(DCC_SelectMenu:menu, min_values);
+AMX_DECLARE_NATIVE(Native::DCC_SelectMenuSetMinValues)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SelectMenuSetMinValues", params, "dd");
+	auto menu_id = static_cast<SelectMenuId_t>(params[1]);
+	auto const& menu = SelectMenuManager::Get()->FindSelectMenu(menu_id);
+	if (!menu)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid select menu id '{}'", menu_id);
+		return 0;
+	}
+	menu->SetMinValues(static_cast<int>(params[2]));
+	return 1;
+}
+
+// native DCC_SelectMenuSetMaxValues(DCC_SelectMenu:menu, max_values);
+AMX_DECLARE_NATIVE(Native::DCC_SelectMenuSetMaxValues)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SelectMenuSetMaxValues", params, "dd");
+	auto menu_id = static_cast<SelectMenuId_t>(params[1]);
+	auto const& menu = SelectMenuManager::Get()->FindSelectMenu(menu_id);
+	if (!menu)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid select menu id '{}'", menu_id);
+		return 0;
+	}
+	menu->SetMaxValues(static_cast<int>(params[2]));
+	return 1;
+}
+
+// native DCC_DeleteSelectMenu(DCC_SelectMenu:button);
+AMX_DECLARE_NATIVE(Native::DCC_DeleteSelectMenu)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_DeleteSelectMenu", params, "d");
+	auto menu_id = static_cast<SelectMenuId_t>(params[1]);
+	return SelectMenuManager::Get()->DeleteSelectMenu(menu_id) ? 1 : 0;
+}
+
+// ===== Action Row natives =====
+
+// native DCC_ActionRow:DCC_CreateActionRow();
+AMX_DECLARE_NATIVE(Native::DCC_CreateActionRow)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_CreateActionRow", params);
+	return ActionRowManager::Get()->AddActionRow();
+}
+
+// native DCC_ActionRowAddButton(DCC_ActionRow:row, DCC_Button:button);
+AMX_DECLARE_NATIVE(Native::DCC_ActionRowAddButton)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ActionRowAddButton", params, "dd");
+	auto row_id = static_cast<ActionRowId_t>(params[1]);
+	auto btn_id = static_cast<ButtonId_t>(params[2]);
+	auto const& row = ActionRowManager::Get()->FindActionRow(row_id);
+	if (!row)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid action row id '{}'", row_id);
+		return 0;
+	}
+	if (!row->CanAddComponent())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "action row is full");
+		return 0;
+	}
+	row->AddButton(btn_id);
+	return 1;
+}
+
+// native DCC_ActionRowAddSelectMenu(DCC_ActionRow:row, DCC_SelectMenu:menu);
+AMX_DECLARE_NATIVE(Native::DCC_ActionRowAddSelectMenu)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ActionRowAddSelectMenu", params, "dd");
+	auto row_id = static_cast<ActionRowId_t>(params[1]);
+	auto menu_id = static_cast<SelectMenuId_t>(params[2]);
+	auto const& row = ActionRowManager::Get()->FindActionRow(row_id);
+	if (!row)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid action row id '{}'", row_id);
+		return 0;
+	}
+	if (!row->CanAddComponent())
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "action row is full");
+		return 0;
+	}
+	row->AddSelectMenu(menu_id);
+	return 1;
+}
+
+// native DCC_DeleteActionRow(DCC_ActionRow:row);
+AMX_DECLARE_NATIVE(Native::DCC_DeleteActionRow)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_DeleteActionRow", params, "d");
+	auto row_id = static_cast<ActionRowId_t>(params[1]);
+	return ActionRowManager::Get()->DeleteActionRow(row_id) ? 1 : 0;
+}
+
+// ===== Send Message With Components =====
+
+// native DCC_SendChannelMessageWithComponents(DCC_Channel:channel, const message[], DCC_ActionRow:rows[], num_rows, const callback[] = "", const format[] = "", {Float, _}:...);
+AMX_DECLARE_NATIVE(Native::DCC_SendChannelMessageWithComponents)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_SendChannelMessageWithComponents", params, "dsrd");
+
+	auto channel_id = static_cast<ChannelId_t>(params[1]);
+	auto const& channel = ChannelManager::Get()->FindChannel(channel_id);
+	if (!channel)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid channel id '{}'", channel_id);
+		return 0;
+	}
+
+	auto message = amx_GetCppString(amx, params[2]);
+	if (message.length() > 2000)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "message must be shorter than 2000 characters");
+		return 0;
+	}
+
+	cell* addr = nullptr;
+	amx_GetAddr(amx, params[3], &addr);
+	int num_rows = static_cast<int>(params[4]);
+	std::vector<ActionRowId_t> row_ids;
+	for (int i = 0; i < num_rows; i++)
+		row_ids.push_back(static_cast<ActionRowId_t>(addr[i]));
+
+	auto
+		cb_name = amx_GetCppString(amx, params[5]),
+		cb_format = amx_GetCppString(amx, params[6]);
+
+	pawn_cb::Error cb_error;
+	auto cb = pawn_cb::Callback::Prepare(
+		amx, cb_name.c_str(), cb_format.c_str(), params, 7, cb_error);
+	if (cb_error && cb_error.get() != pawn_cb::Error::Type::EMPTY_NAME)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "could not prepare callback");
+		return 0;
+	}
+
+	channel->SendMessageWithComponents(std::move(message), std::move(row_ids), std::move(cb));
+	return 1;
+}
+
+// native DCC_EditMessageWithComponents(DCC_Message:message, const content[], DCC_ActionRow:rows[], num_rows, DCC_Embed:embed = DCC_Embed:0);
+AMX_DECLARE_NATIVE(Native::DCC_EditMessageWithComponents)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_EditMessageWithComponents", params, "dsrdd");
+
+	auto message_id = static_cast<MessageId_t>(params[1]);
+	auto const& msg = MessageManager::Get()->Find(message_id);
+	if (!msg)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid message id '{}'", message_id);
+		return 0;
+	}
+
+	auto content = amx_GetCppString(amx, params[2]);
+	cell* addr = nullptr;
+	amx_GetAddr(amx, params[3], &addr);
+	int num_rows = static_cast<int>(params[4]);
+	std::vector<ActionRowId_t> row_ids;
+	for (int i = 0; i < num_rows; i++)
+		row_ids.push_back(static_cast<ActionRowId_t>(addr[i]));
+
+	auto embed_id = static_cast<EmbedId_t>(params[5]);
+
+	msg->EditMessageWithComponents(std::move(content), std::move(row_ids), embed_id);
+	return 1;
+}
+
+// ===== Modal natives =====
+
+// native DCC_Modal:DCC_CreateModal(const custom_id[DCC_CUSTOM_ID_SIZE], const title[DCC_MODAL_TITLE_SIZE]);
+AMX_DECLARE_NATIVE(Native::DCC_CreateModal)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_CreateModal", params, "ss");
+	auto custom_id = amx_GetCppString(amx, params[1]);
+	auto title = amx_GetCppString(amx, params[2]);
+
+	if (custom_id.empty() || custom_id.length() > 100)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "custom_id must be 1-100 characters");
+		return 0;
+	}
+	if (title.empty() || title.length() > 45)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "title must be 1-45 characters");
+		return 0;
+	}
+
+	return ModalManager::Get()->AddModal(custom_id, title);
+}
+
+// native DCC_ModalSetTitle(DCC_Modal:modal, const title[DCC_MODAL_TITLE_SIZE]);
+AMX_DECLARE_NATIVE(Native::DCC_ModalSetTitle)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ModalSetTitle", params, "ds");
+	auto modal_id = static_cast<ModalId_t>(params[1]);
+	auto const& modal = ModalManager::Get()->FindModal(modal_id);
+	if (!modal)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid modal id '{}'", modal_id);
+		return 0;
+	}
+	auto title = amx_GetCppString(amx, params[2]);
+	modal->SetTitle(title);
+	return 1;
+}
+
+// native DCC_ModalAddTextInput(DCC_Modal:modal, const custom_id[], const label[], DCC_TextInputStyle:style = DCC_TEXT_INPUT_STYLE_SHORT, const placeholder[] = "", const default_value[] = "", min_length = 0, max_length = 4000, bool:required = true);
+AMX_DECLARE_NATIVE(Native::DCC_ModalAddTextInput)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_ModalAddTextInput", params, "dssdssddd");
+
+	auto modal_id = static_cast<ModalId_t>(params[1]);
+	auto const& modal = ModalManager::Get()->FindModal(modal_id);
+	if (!modal)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "invalid modal id '{}'", modal_id);
+		return 0;
+	}
+
+	auto custom_id = amx_GetCppString(amx, params[2]);
+	auto label = amx_GetCppString(amx, params[3]);
+	auto style = static_cast<int>(params[4]);
+	auto placeholder = amx_GetCppString(amx, params[5]);
+	auto default_value = amx_GetCppString(amx, params[6]);
+	auto min_length = static_cast<int>(params[7]);
+	auto max_length = static_cast<int>(params[8]);
+	bool required = static_cast<bool>(params[9]);
+
+	if (custom_id.empty() || custom_id.length() > 100)
+	{
+		Logger::Get()->LogNative(samplog_LogLevel::ERROR, "custom_id must be 1-100 characters");
+		return 0;
+	}
+
+	modal->AddTextInput(custom_id, label, style, placeholder, default_value, min_length, max_length, required);
+	return 1;
+}
+
+// native DCC_DeleteModal(DCC_Modal:modal);
+AMX_DECLARE_NATIVE(Native::DCC_DeleteModal)
+{
+	ScopedDebugInfo dbg_info(amx, "DCC_DeleteModal", params, "d");
+	auto modal_id = static_cast<ModalId_t>(params[1]);
+	return ModalManager::Get()->DeleteModal(modal_id) ? 1 : 0;
+}
