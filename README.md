@@ -1,10 +1,19 @@
 # Discord connector plugin for San Andreas Multiplayer (SA:MP)
 
-| AppVeyor CI | Total downloads | Latest release |
+> **Fork** of [maddinat0r/samp-discord-connector](https://github.com/maddinat0r/samp-discord-connector) maintained by [BagasZkyn](https://github.com/BagasZkyn).
+
+| Build | Total downloads | Latest release |
 | :---: | :---: | :---: |
-|  ![Build status](https://github.com/maddinat0r/samp-discord-connector/workflows/Build/badge.svg)|  [![All Releases](https://img.shields.io/github/downloads/maddinat0r/samp-discord-connector/total.svg?maxAge=86400)](https://github.com/maddinat0r/samp-discord-connector/releases)  |  [![latest release](https://img.shields.io/github/release/maddinat0r/samp-discord-connector.svg?maxAge=86400)](https://github.com/maddinat0r/samp-discord-connector/releases) <br> [![Github Releases](https://img.shields.io/github/downloads/maddinat0r/samp-discord-connector/latest/total.svg?maxAge=86400)](https://github.com/maddinat0r/samp-discord-connector/releases)  |  
+| ![Build status](https://github.com/BagasZkyn/samp-discord-connector/workflows/Build/badge.svg) | [![All Releases](https://img.shields.io/github/downloads/BagasZkyn/samp-discord-connector/total.svg?maxAge=86400)](https://github.com/BagasZkyn/samp-discord-connector/releases) | [![latest release](https://img.shields.io/github/release/BagasZkyn/samp-discord-connector.svg?maxAge=86400)](https://github.com/BagasZkyn/samp-discord-connector/releases) |
+
 -------------------------------------------------
 **This plugin allows you to control a Discord bot from within your PAWN script.**
+
+## What's new in this fork
+
+- Added **Component** support (`ActionRow`, `Button`, `SelectMenu`) for interactive message components
+- Added **Modal** support for Discord modal/form interactions
+- Fixed missing includes in `natives.cpp` (`Component.hpp`, `Modal.hpp`, `utils.hpp`)
 
 **How to install on an open.mp server**
 -----------------------------------
@@ -48,3 +57,8 @@ Build instruction
 4. clone this repository recursively (`git clone --recursive https://...`)
 5. create a folder named `build` and execute CMake in there (`mkdir build && cd build && cmake ..`)
 6. build the generated project files with your C++ compiler
+
+Credits
+-------
+- [maddinat0r](https://github.com/maddinat0r) — original author of samp-discord-connector
+- [BagasZkyn](https://github.com/BagasZkyn) — Component & Modal support, bug fixes
